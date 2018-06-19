@@ -1,0 +1,217 @@
+#!/usr/bin/env python
+
+__author__ = 'njaiswal'
+
+import os
+import platform
+import re
+import sys
+import time
+import logging
+from urlparse import urljoin, urlparse
+import ConfigParser
+
+
+from optparse import OptionParser
+
+from vRADriver.action import scan_usable_client
+from vRADriver.utils.filesystem import get_config_value, load_config_files
+from vRADriver.utils.process import die
+from vRADriver.utils.misc import banner
+from vRADriver.action.vmcreate import VMCreateClient 
+from vRADriver import get_package_version, get_version_string
+
+CONFIG_FILE = '.cloudrc'
+
+# set home path
+if 'HOME' in os.environ:
+    homepath = os.environ["HOME"]
+elif 'USERPROFILE' in os.environ:
+    homepath = os.environ["USERPROFILE"]
+else:
+    homepath = ''
+
+options = None
+configs = []
+
+	
+def debug(s):
+    """
+    Prints debugging information if post-review was run with --debug
+    """
+    if options and options.debug:
+        print ">>> %s" % s
+		
+def parse_options(args):
+
+    parser = OptionParser(usage="%prog [-jftp] [options] arg",
+                    version="%prog: " + get_version_string())
+
+    parser.add_option("-j", "--job",
+                    dest="job",
+                    default=get_config_value(configs, 'JOB'),
+                    help="Mandatory: Operation to be performed"
+                        " i.e for VM creation 'create', for VM destroy 'delete'"
+                        " for VM power on 'powerOn', for VM power off 'powerOff'"
+                        " for disk add 'diskadd'")
+						
+    parser.add_option("-t", "--catname",
+                    dest="catn",
+                    default=get_config_value(configs, 'CATNAME'),
+                    help="Name of the catalog that includes the"
+                        " application container template.")
+						
+    parser.add_option("-o", "--oper",
+                    dest="oper",
+                    default=get_config_value(configs, 'OPER'),
+                    help="Type of operation selected"
+                        " i.e Build or Regression or Development.")
+						
+    parser.add_option("-g", "--groupid",
+                    dest="groupid",
+                    default=get_config_value(configs, 'GROUPDID'),
+                    help="Name of HOME product"
+                        " i.e Nastran, Adams, Simx, Apex, Patran")
+						
+    parser.add_option("-w", "--wflow",
+                    dest="wflow",
+                    default=get_config_value(configs, 'WFLOW'),
+                    help="Name of Work flow template")
+					
+    parser.add_option("-v", "--vname",
+                    dest="vname",
+                    default=get_config_value(configs, 'VNAME'),
+                    help="Valid virtual machine name")
+	
+    parser.add_option("-l", "--lease",
+                    dest="lease",
+                    default=get_config_value(configs, 'LEASE'),
+                    help="Time duration, until VM is active, optional")
+					
+    parser.add_option("-n", "--novm",
+                    dest="novm",
+                    default=get_config_value(configs, 'NOVM'),
+                    help="No. of VM for subscription, presently support only 1")
+					
+    parser.add_option("-m", "--memsize",
+                    dest="memsize",
+                    default=get_config_value(configs, 'MEMSIZE'),
+                    help="Memory to be used for VM")
+					
+    parser.add_option("-c", "--cpucnt",
+                    dest="cpucnt",
+                    default=get_config_value(configs, 'CPUCNT'),
+                    help="No of CPU to be used for VM")
+					
+    parser.add_option("-r", "--reason",
+                    dest="reason",
+					default=get_config_value(configs, 'REASON'),
+					help="Reasons .....")
+
+    parser.add_option("-d", "--debug",
+                    action="store_true", dest="debug",
+                    default=get_config_value(configs, 'DEBUG', False),
+                    help="display debug output")
+					
+    parser.add_option("-f", "--rundir",
+                    dest="rundir",
+                    default=get_config_value(configs, 'RUNTDIR'),
+                    help="Mandatory: Runtime directory path")
+					
+    parser.add_option("-x", "--switch",
+                    action="store_true", dest="switch",
+                    default=get_config_value(configs, 'SWITCH', False),
+                    help="Game changer")
+					
+    parser.add_option("-i", "--vmid",
+                    dest="vmid",
+                    default=get_config_value(configs, 'VMID'),
+                    help="VM id of VM to perform power management operation i.e powerOff or deleteVM etc")
+
+    parser.add_option("-u", "--user",
+                    dest="user",
+                    default=get_config_value(configs, 'USER'),
+                    help="Login user name")
+
+    parser.add_option("-p", "--pass",
+                    dest="pass",
+                    default=get_config_value(configs, 'PASS'),
+                    help="Password to login to vcac server")
+					
+    (globals()["options"], args) = parser.parse_args(args)
+
+    if options.debug:
+        # create logger
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+        # create console handler and set level to debug
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG)
+        # create formatter
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        # add formatter to ch
+        ch.setFormatter(formatter)
+        # add ch to logger
+        logger.addHandler(ch)
+
+    return args
+
+
+def main():
+    if 'APPDATA' in os.environ:
+        homepath = os.environ['APPDATA']
+    elif 'HOME' in os.environ:
+        homepath = os.environ["HOME"]
+    else:
+        homepath = ''
+
+    # Load the config and cookie files
+    cookie_file = os.path.join(homepath, ".HOMEcloud-cookies.txt")		
+    user_config, globals()['configs'] = load_config_files(homepath)
+	
+    args = parse_options(sys.argv[1:])
+    #banner("HOME Corporation")
+    debug('vCAC HOME Util %s' % get_version_string() )
+    debug('Python %s' % sys.version)
+    debug('Running on %s' % (platform.platform()))
+    debug('Home = %s' % homepath)
+    debug('Current Directory = %s' % os.getcwd())
+	
+    repository_info, tool = scan_usable_client(options)
+
+    tool.user_config = user_config
+    tool.configs = configs
+
+    # Verify that options specific to an SCM Client have not been mis-used.
+    tool.check_options()	
+
+    if options.job == None:
+        print "The mandatory parameter option job is missing"
+        sys.exit(1)
+    if options.job == 'create':	
+        starttime = time.asctime( time.localtime(time.time()) )
+        banner("Virtual machine request")
+        print "Start time: %s" % starttime
+        #tool.ucsvm_create_request()
+        tool.vcac_vm_request()
+        endtime = time.asctime( time.localtime(time.time()) )
+        print "End time: %s" % endtime
+        banner("Virtual machine request done")
+
+    if options.job == 'poweroff':
+        tool.ucsvm_getuser_profile()
+        tool.ucsvm_powerop_request(options.vmid, 'powerOff')
+
+    if options.job == 'poweron':
+        tool.ucsvm_powerop_request(options.vmid, 'powerOn')
+
+    if options.job == 'delete':
+        #tool.ucsvm_powerop_request(options.vmid, 'shutdownGuest')
+        #tool.ucsvm_powerop_request(options.vmid, 'destroyVM')
+        tool.vcac_vm_destroy()
+        #tool.ucsvm_powerop_request(options.vmid, 'reset')
+	
+if __name__ == "__main__":
+    main()
+
+
